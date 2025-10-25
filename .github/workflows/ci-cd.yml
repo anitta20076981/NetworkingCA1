@@ -1,0 +1,48 @@
+name: Deploy to AWS EKS
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  IMAGE_REPO: simple-js-app   # repo name
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        run: |
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:$IMAGE_TAG .
+          docker tag ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:$IMAGE_TAG ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:latest
+
+      - name: Push Docker image to ECR
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:$IMAGE_TAG
+          docker push ${{ secrets.ECR_REGISTRY }}/${{ env.IMAGE_REPO }}:latest
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to EKS
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          kubectl set image

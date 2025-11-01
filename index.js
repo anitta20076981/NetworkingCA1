@@ -29,7 +29,7 @@ app.get('/', (req, res) => {
                 }
                 p {
                     font-size: 18px;
-                    color: #333;
+                    color: #333;  
                 }
             </style>
         </head>

@@ -79,7 +79,7 @@ resource "aws_eks_cluster" "eks" {
 
 # -------------------- ECR REPOSITORY --------------------
 resource "aws_ecr_repository" "app" {
-  name                 = "my-simple-app-2"   # unique repo name
+  name                 = "my-simple-app-3"   # unique repo name
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {

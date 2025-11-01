@@ -12,14 +12,14 @@ provider "aws" {
 }
 
 # -------------------- VPC + SUBNETS --------------------
-# Use existing default VPC instead of creating a new one
+# Use the existing default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
 data "aws_availability_zones" "available" {}
 
-# Use the first two subnets of the default VPC
+# Get the first 2 subnets of the default VPC
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -28,15 +28,6 @@ data "aws_subnets" "default" {
 }
 
 # -------------------- IAM ROLE FOR EKS --------------------
-# Check if role exists, otherwise create a new one
-resource "aws_iam_role" "eks_cluster_role" {
-  name               = "terraform-eks-cluster-role-2"
-  assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 data "aws_iam_policy_document" "eks_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -44,6 +35,15 @@ data "aws_iam_policy_document" "eks_assume_role" {
       type        = "Service"
       identifiers = ["eks.amazonaws.com"]
     }
+  }
+}
+
+resource "aws_iam_role" "eks_cluster_role" {
+  name               = "terraform-eks-cluster-role-2"
+  assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
@@ -73,20 +73,9 @@ resource "aws_eks_cluster" "eks" {
 }
 
 # -------------------- ECR REPOSITORY --------------------
-# Use existing ECR if present
+# Reference the existing repository
 data "aws_ecr_repository" "app" {
   name = "my-simple-app-2"
-}
-
-resource "aws_ecr_repository" "app_create" {
-  count = data.aws_ecr_repository.app.id != "" ? 0 : 1
-
-  name                 = "my-simple-app-2"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
 }
 
 # -------------------- OUTPUTS --------------------
@@ -95,5 +84,5 @@ output "eks_cluster_name" {
 }
 
 output "ecr_repository_uri" {
-  value = coalesce(data.aws_ecr_repository.app.repository_url, aws_ecr_repository.app_create[0].repository_url)
+  value = data.aws_ecr_repository.app.repository_url
 }

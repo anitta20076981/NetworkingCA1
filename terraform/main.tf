@@ -12,19 +12,28 @@ provider "aws" {
 }
 
 # -------------------- VPC + SUBNETS --------------------
-# Use the existing default VPC
-data "aws_vpc" "default" {
-  default = true
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+  tags = { Name = "terraform-vpc" }
 }
 
 data "aws_availability_zones" "available" {}
 
-# Get the first 2 subnets of the default VPC
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+resource "aws_subnet" "public" {
+  count             = 2
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
+  availability_zone = element(data.aws_availability_zones.available.names, count.index)
+
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "public-subnet-${count.index}"
   }
+}
+
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
 }
 
 # -------------------- IAM ROLE FOR EKS --------------------
@@ -39,12 +48,8 @@ data "aws_iam_policy_document" "eks_assume_role" {
 }
 
 resource "aws_iam_role" "eks_cluster_role" {
-  name               = "terraform-eks-cluster-role-2"
+  name               = "terraform-eks-cluster-role-2"   # unique name
   assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_iam_role_policy_attachment" "cluster_policy" {
@@ -59,11 +64,11 @@ resource "aws_iam_role_policy_attachment" "vpc_cni_policy" {
 
 # -------------------- EKS CLUSTER --------------------
 resource "aws_eks_cluster" "eks" {
-  name     = "terraform-eks-cluster-2"
+  name     = "terraform-eks-cluster-2"   # unique cluster name
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    subnet_ids = slice(data.aws_subnets.default.ids, 0, 2)
+    subnet_ids = aws_subnet.public[*].id
   }
 
   depends_on = [
@@ -73,9 +78,13 @@ resource "aws_eks_cluster" "eks" {
 }
 
 # -------------------- ECR REPOSITORY --------------------
-# Reference the existing repository
-data "aws_ecr_repository" "app" {
-  name = "my-simple-app-2"
+resource "aws_ecr_repository" "app" {
+  name                 = "my-simple-app-2"   # unique repo name
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # -------------------- OUTPUTS --------------------
@@ -84,5 +93,5 @@ output "eks_cluster_name" {
 }
 
 output "ecr_repository_uri" {
-  value = data.aws_ecr_repository.app.repository_url
+  value = aws_ecr_repository.app.repository_url
 }

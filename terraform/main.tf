@@ -12,31 +12,31 @@ provider "aws" {
 }
 
 # -------------------- VPC + SUBNETS --------------------
-resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
-  tags = { Name = "terraform-vpc" }
+# Use existing default VPC instead of creating a new one
+data "aws_vpc" "default" {
+  default = true
 }
 
 data "aws_availability_zones" "available" {}
 
-resource "aws_subnet" "public" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, count.index)
-  availability_zone = element(data.aws_availability_zones.available.names, count.index)
-
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name = "public-subnet-${count.index}"
+# Use the first two subnets of the default VPC
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
   }
 }
 
-resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.main.id
+# -------------------- IAM ROLE FOR EKS --------------------
+# Check if role exists, otherwise create a new one
+resource "aws_iam_role" "eks_cluster_role" {
+  name               = "terraform-eks-cluster-role-2"
+  assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# -------------------- IAM ROLE FOR EKS --------------------
 data "aws_iam_policy_document" "eks_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -45,11 +45,6 @@ data "aws_iam_policy_document" "eks_assume_role" {
       identifiers = ["eks.amazonaws.com"]
     }
   }
-}
-
-resource "aws_iam_role" "eks_cluster_role" {
-  name               = "terraform-eks-cluster-role-2"   # unique name
-  assume_role_policy = data.aws_iam_policy_document.eks_assume_role.json
 }
 
 resource "aws_iam_role_policy_attachment" "cluster_policy" {
@@ -64,11 +59,11 @@ resource "aws_iam_role_policy_attachment" "vpc_cni_policy" {
 
 # -------------------- EKS CLUSTER --------------------
 resource "aws_eks_cluster" "eks" {
-  name     = "terraform-eks-cluster-2"   # unique cluster name
+  name     = "terraform-eks-cluster-2"
   role_arn = aws_iam_role.eks_cluster_role.arn
 
   vpc_config {
-    subnet_ids = aws_subnet.public[*].id
+    subnet_ids = slice(data.aws_subnets.default.ids, 0, 2)
   }
 
   depends_on = [
@@ -78,8 +73,15 @@ resource "aws_eks_cluster" "eks" {
 }
 
 # -------------------- ECR REPOSITORY --------------------
-resource "aws_ecr_repository" "app" {
-  name                 = "my-simple-app-2"   # unique repo name
+# Use existing ECR if present
+data "aws_ecr_repository" "app" {
+  name = "my-simple-app-2"
+}
+
+resource "aws_ecr_repository" "app_create" {
+  count = data.aws_ecr_repository.app.id != "" ? 0 : 1
+
+  name                 = "my-simple-app-2"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
@@ -93,5 +95,5 @@ output "eks_cluster_name" {
 }
 
 output "ecr_repository_uri" {
-  value = aws_ecr_repository.app.repository_url
+  value = coalesce(data.aws_ecr_repository.app.repository_url, aws_ecr_repository.app_create[0].repository_url)
 }

@@ -5,8 +5,7 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: eu-north-1               # or your region
-  IMAGE_REPO: simple-js-app            # your ECR repository name (no repetition)
+  AWS_REGION: eu-north-1
 
 jobs:
   build-and-deploy:
@@ -16,43 +15,78 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 1️⃣: Configure AWS credentials
-      - name: Configure AWS credentials
+      # ---------------- Terraform: setup + apply ----------------
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Configure AWS credentials (for Terraform)
         uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Step 2️⃣: Log in to Amazon ECR
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform Apply (auto-approve)
+        working-directory: ./terraform
+        run: terraform apply -auto-approve
+
+      - name: Save terraform outputs to file
+        working-directory: ./terraform
+        run: terraform output -json > tf-outputs.json
+
+      - name: Install jq (for parsing outputs)
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - id: set-outputs
+        name: Parse and set outputs
+        run: |
+          jq . tf-outputs.json
+          ECR_URI=$(jq -r '.ecr_repository_uri.value // empty' tf-outputs.json)
+          EKS_NAME=$(jq -r '.eks_cluster_name.value // empty' tf-outputs.json)
+          if [ -z "$ECR_URI" ]; then
+            echo "Error: ecr_repository_uri not found in terraform outputs" >&2
+            exit 1
+          fi
+          if [ -z "$EKS_NAME" ]; then
+            echo "Error: eks_cluster_name not found in terraform outputs" >&2
+            exit 1
+          fi
+          echo "ECR_REPOSITORY_URI=$ECR_URI" >> $GITHUB_OUTPUT
+          echo "EKS_CLUSTER_NAME=$EKS_NAME" >> $GITHUB_OUTPUT
+
+      # ---------------- Use Terraform outputs in CI/CD ----------------
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Step 3️⃣: Build and tag Docker image
       - name: Build Docker image
         run: |
           IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          docker build -t $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG $ECR_REGISTRY/${{ env.IMAGE_REPO }}:latest
+          IMAGE_URI=${{ steps.set-outputs.outputs.ECR_REPOSITORY_URI }}
+          echo "Building $IMAGE_URI:$IMAGE_TAG"
+          docker build -t $IMAGE_URI:$IMAGE_TAG .
+          docker tag $IMAGE_URI:$IMAGE_TAG $IMAGE_URI:latest
 
-      # Step 4️⃣: Push image to ECR
       - name: Push Docker image to ECR
         run: |
           IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          docker push $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG
-          docker push $ECR_REGISTRY/${{ env.IMAGE_REPO }}:latest
+          IMAGE_URI=${{ steps.set-outputs.outputs.ECR_REPOSITORY_URI }}
+          docker push $IMAGE_URI:$IMAGE_TAG
+          docker push $IMAGE_URI:latest
 
-      # Step 5️⃣: Update kubeconfig to connect to your EKS cluster
       - name: Update kubeconfig
         run: |
-          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          aws eks update-kubeconfig --name "${{ steps.set-outputs.outputs.EKS_CLUSTER_NAME }}" --region ${{ env.AWS_REGION }}
 
-      # Step 6️⃣: Deploy updated image to EKS
-      - name: Deploy to EKS
+      - name: Deploy updated image to EKS
         run: |
           IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
-          kubectl set image deployment/simple-js-app simple-js-app=$ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG
+          IMAGE_URI=${{ steps.set-outputs.outputs.ECR_REPOSITORY_URI }}
+          # replace image in existing deployment
+          kubectl set image deployment/simple-js-app simple-js-app=$IMAGE_URI:$IMAGE_TAG --record

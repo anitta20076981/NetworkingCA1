@@ -5,15 +5,14 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: eu-north-1         # your region
-  IMAGE_REPO: simple-js-app      # your ECR repository name
+  AWS_REGION: eu-north-1
+  IMAGE_REPO: simple-js-app
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 0️⃣: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -49,33 +48,28 @@ jobs:
       # Step 6️⃣: Update kubeconfig
       - name: Update kubeconfig
         run: |
-          CLUSTER_NAME="$(terraform output -raw eks_cluster_name)"
-          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region ${{ env.AWS_REGION }}
+          CLUSTER_NAME=$(terraform output -raw eks_cluster_name)
+          aws eks update-kubeconfig --name $CLUSTER_NAME --region ${{ env.AWS_REGION }}
 
-      # Step 7️⃣: Log in to Amazon ECR
+      # Step 7️⃣: Log in to ECR
       - name: Log in to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $(terraform output -raw ecr_repository_uri | cut -d/ -f1)
 
-      # Step 8️⃣: Build and tag Docker image
-      - name: Build Docker image
+      # Step 8️⃣: Build and push Docker image
+      - name: Build and push Docker image
         run: |
           IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY="$(terraform output -raw ecr_repository_uri)"
+          ECR_REGISTRY=$(terraform output -raw ecr_repository_uri)
           docker build -t $ECR_REGISTRY:$IMAGE_TAG .
           docker tag $ECR_REGISTRY:$IMAGE_TAG $ECR_REGISTRY:latest
-
-      # Step 9️⃣: Push Docker image to ECR
-      - name: Push Docker image to ECR
-        run: |
-          IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY="$(terraform output -raw ecr_repository_uri)"
           docker push $ECR_REGISTRY:$IMAGE_TAG
           docker push $ECR_REGISTRY:latest
 
-      # Step 🔟: Deploy Docker container to EKS
+      # Step 9️⃣: Deploy container to EKS
       - name: Deploy to EKS
         run: |
           IMAGE_TAG=${{ github.sha }}
-          ECR_REGISTRY="$(terraform output -raw ecr_repository_uri)"
+          ECR_REGISTRY=$(terraform output -raw ecr_repository_uri)
           kubectl set image deployment/simple-js-app simple-js-app=$ECR_REGISTRY:$IMAGE_TAG

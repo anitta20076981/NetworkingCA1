@@ -5,66 +5,54 @@ on:
     branches: [ main ]
 
 env:
-  AWS_REGION: eu-north-1
-  IMAGE_REPO: simple-js-app
+  AWS_REGION: eu-north-1               # or your region
+  IMAGE_REPO: simple-js-app            # your ECR repository name (no repetition)
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    # ---------------- Terraform Steps ----------------
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v2
-      with:
-        terraform_version: 1.6.0
+      # Step 1️⃣: Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Terraform Init
-      run: terraform -chdir=terraform init
+      # Step 2️⃣: Log in to Amazon ECR
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Terraform Apply
-      run: terraform -chdir=terraform apply -auto-approve
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Step 3️⃣: Build and tag Docker image
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          docker build -t $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG $ECR_REGISTRY/${{ env.IMAGE_REPO }}:latest
 
-    - name: Get EKS cluster name
-      id: eks_cluster
-      run: |
-        echo "EKS_CLUSTER_NAME=$(terraform -chdir=terraform output -raw eks_cluster_name)" >> $GITHUB_ENV
+      # Step 4️⃣: Push image to ECR
+      - name: Push Docker image to ECR
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          docker push $ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG
+          docker push $ECR_REGISTRY/${{ env.IMAGE_REPO }}:latest
 
-    - name: Get ECR repository URI
-      id: ecr_repo
-      run: |
-        echo "ECR_URI=$(terraform -chdir=terraform output -raw ecr_repository_uri)" >> $GITHUB_ENV
+      # Step 5️⃣: Update kubeconfig to connect to your EKS cluster
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-    # ---------------- AWS & Docker Steps ----------------
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Log in to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
-
-    - name: Build and push Docker image
-      run: |
-        IMAGE_TAG=${{ github.sha }}
-        docker build -t $ECR_URI:$IMAGE_TAG .
-        docker tag $ECR_URI:$IMAGE_TAG $ECR_URI:latest
-        docker push $ECR_URI:$IMAGE_TAG
-        docker push $ECR_URI:latest
-
-    - name: Update kubeconfig
-      run: aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION
-
-    - name: Deploy to EKS
-      run: |
-        IMAGE_TAG=${{ github.sha }}
-        kubectl set image deployment/simple-js-app simple-js-app=$ECR_URI:$IMAGE_TAG
+      # Step 6️⃣: Deploy updated image to EKS
+      - name: Deploy to EKS
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}
+          kubectl set image deployment/simple-js-app simple-js-app=$ECR_REGISTRY/${{ env.IMAGE_REPO }}:$IMAGE_TAG

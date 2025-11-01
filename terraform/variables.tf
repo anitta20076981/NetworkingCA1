@@ -25,5 +25,5 @@ variable "eks_role_name" {
 variable "ecr_name" {
   description = "ECR repository name"
   type        = string
-  default     = "my-simple-app"
+  default     = "my-simple-app1"
 }
